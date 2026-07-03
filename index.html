@@ -3,33 +3,37 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>현장 보고 시스템</title>
+    <title>현장 보고 및 확인 시스템</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 p-4">
-    <div class="max-w-md mx-auto bg-white p-6 rounded-lg shadow-lg">
-        <h1 class="text-2xl font-bold mb-4">현장 보고</h1>
-        
-        <textarea id="reportText" class="w-full p-2 border rounded mb-4" rows="4" placeholder="보고 내용을 입력하세요..."></textarea>
-        
-        <input type="file" id="imageInput" accept="image/*" capture="environment" class="mb-4">
-        <div id="previewContainer" class="mb-4 hidden">
-            <img id="preview" src="" alt="미리보기" class="w-full rounded shadow">
+    <div class="max-w-md mx-auto">
+        <!-- 보고 작성 섹션 -->
+        <div class="bg-white p-6 rounded-lg shadow-lg mb-6">
+            <h1 class="text-2xl font-bold mb-4">현장 보고</h1>
+            <textarea id="reportText" class="w-full p-2 border rounded mb-4" rows="3" placeholder="보고 내용을 입력하세요..."></textarea>
+            <input type="file" id="imageInput" accept="image/*" class="mb-4">
+            <div id="previewContainer" class="mb-4 hidden">
+                <img id="preview" src="" alt="미리보기" class="w-full rounded shadow">
+            </div>
+            <button id="sendBtn" class="w-full bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700">전송하기</button>
         </div>
 
-        <button id="sendBtn" class="w-full bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700">전송하기</button>
-        
-        <div id="statusMessage" class="mt-4 text-center font-medium"></div>
+        <!-- 보고 목록 확인 섹션 -->
+        <h2 class="text-xl font-bold mb-3">보고 목록</h2>
+        <div id="reportList" class="space-y-4">
+            <!-- 보고 내용이 여기에 추가됩니다 -->
+        </div>
     </div>
 
     <script>
+        const reportList = document.getElementById('reportList');
+        const reportText = document.getElementById('reportText');
         const imageInput = document.getElementById('imageInput');
         const preview = document.getElementById('preview');
         const previewContainer = document.getElementById('previewContainer');
-        const sendBtn = document.getElementById('sendBtn');
-        const reportText = document.getElementById('reportText');
-        const statusMessage = document.getElementById('statusMessage');
 
+        // 이미지 미리보기
         imageInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (file) {
@@ -42,31 +46,24 @@
             }
         });
 
-        sendBtn.addEventListener('click', () => {
-            const text = reportText.value;
-            const photo = preview.src;
+        // 전송 및 목록 업데이트
+        document.getElementById('sendBtn').addEventListener('click', () => {
+            if (!reportText.value && !preview.src) return;
 
-            if (!text && !photo) {
-                statusMessage.innerText = "내용이나 사진을 입력해주세요.";
-                statusMessage.classList.add('text-red-500');
-                return;
-            }
+            const card = document.createElement('div');
+            card.className = "bg-white p-4 rounded-lg shadow";
+            card.innerHTML = `
+                <p class="text-gray-800 mb-2">${reportText.value}</p>
+                ${previewContainer.classList.contains('hidden') ? '' : `<img src="${preview.src}" class="w-full rounded mb-2">`}
+                <small class="text-gray-500">${new Date().toLocaleString()}</small>
+            `;
+            
+            reportList.prepend(card); // 최신 보고가 위로 오도록
 
-            // 전송 로직 시뮬레이션
-            statusMessage.innerText = "보고 데이터를 전송 중입니다...";
-            statusMessage.classList.remove('text-red-500');
-            statusMessage.classList.add('text-blue-600');
-
-            setTimeout(() => {
-                statusMessage.innerText = "전송 완료되었습니다!";
-                statusMessage.classList.remove('text-blue-600');
-                statusMessage.classList.add('text-green-600');
-                
-                // 전송 후 초기화
-                reportText.value = '';
-                previewContainer.classList.add('hidden');
-                imageInput.value = '';
-            }, 1500);
+            // 초기화
+            reportText.value = '';
+            previewContainer.classList.add('hidden');
+            imageInput.value = '';
         });
     </script>
 </body>
