@@ -15,8 +15,15 @@
     
     <!-- 공통 UI 및 데이터 처리 스크립트 -->
     <script>
-        window.productionData = [];
-        window.defectData = [];
+        window.productionData = [
+            { line: '자동화 라인', part: '61NA-40052', qty: 150, worker: '엄 파트장', date: '2026-06-24' },
+            { line: '수동 라인', part: '14792484', qty: 85, worker: '김형기', date: '2026-06-24' }
+        ];
+        window.defectData = [
+            { type: '품질불량', line: '수동 라인', cause: '원소재 흑피 불량', action: '수정', qty: 2, date: '2026-06-10' },
+            { type: '품질불량', line: '자동화 라인', cause: '소재 세팅 불량으로 인한 치수 미달', action: '폐기', qty: 1, date: '2026-06-20' },
+            { type: '설비고장', line: '자동화 라인', cause: '심압대 T/S QUILL 센서 오작동 정지', action: '-', qty: 0, date: '2026-06-24' }
+        ];
         window.currentUser = { uid: "dummy-operator" }; // 기본 더미 세팅 (오프라인/검증 대비)
         window.db = null;
         window.auth = null;
@@ -348,27 +355,98 @@
             XLSX.writeFile(workbook, "진성씨앤아이_불량리포트.xlsx");
         };
 
-        // 시연을 위한 초기 더미 데이터 주입 함수 (DB가 비어있을 때만)
-        window.injectDummyDataIfEmpty = async function() {
-             if (!window.db) {
-                 window.defectData = [
-                    { type: '품질불량', line: '수동 라인', cause: '원소재 흑피 불량', action: '수정', qty: 2, date: '2026-06-10' },
-                    { type: '품질불량', line: '자동화 라인', cause: '소재 세팅 불량으로 인한 치수 미달', action: '폐기', qty: 1, date: '2026-06-20' },
-                    { type: '설비고장', line: '자동화 라인', cause: '심압대 T/S QUILL 센서 오작동 정지', action: '-', qty: 0, date: '2026-06-24' }
-                 ];
-                 window.productionData = [
-                    { line: '자동화 라인', part: '61NA-40052', qty: 150, worker: '엄 파트장', date: '2026-06-24' },
-                    { line: '수동 라인', part: '14792484', qty: 85, worker: '김형기', date: '2026-06-24' }
-                 ];
-                 window.updateProductionTable();
-                 window.updateDefectDashboard();
-                 window.updateDefectTable();
-                 return;
-             }
+        window.submitDefect = async function(event) {
+            event.preventDefault();
+            if(!window.currentUser) return window.showToast("권한이 없습니다.", "error");
+
+            const form = event.target;
+            const line = form.defect_line.value;
+            const cause = form.defect_cause.value;
+            const action = form.action_result.value;
+            const qty = 1;
+            
+            const imgPreview = document.getElementById('defect-img-preview');
+            const image = imgPreview && imgPreview.src && !imgPreview.classList.contains('hidden') && imgPreview.src.startsWith('data:') ? imgPreview.src : null;
+            
+            try {
+                if (window.submitDefectOnline && window.db) {
+                    await Promise.race([
+                        window.submitDefectOnline(line, cause, action, qty, image),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+                    ]);
+                    window.showToast("[품질불량] 내역이 보고되었습니다.", "error-theme");
+                } else {
+                    throw new Error("Offline/Local fallback");
+                }
+                form.reset();
+                window.clearImage('defect');
+            } catch(e) {
+                console.warn("Firestore write skipped/failed, saving locally:", e);
+                
+                const newDefect = {
+                    id: "local-" + Date.now(),
+                    type: '품질불량', line, cause, action, qty, image,
+                    date: new Date().toISOString().split('T')[0],
+                    timestamp: { toMillis: () => Date.now() }
+                };
+                window.defectData.unshift(newDefect);
+                window.updateDefectDashboard();
+                window.updateDefectTable();
+                
+                window.showToast("[품질불량] 로컬(메모리)에 저장되었습니다.", "error-theme");
+                form.reset();
+                window.clearImage('defect');
+            }
         };
 
-        // Run init
-        // initAuth is called in the module script block below
+        window.submitMachine = async function(event) {
+            event.preventDefault();
+            if(!window.currentUser) return window.showToast("권한이 없습니다.", "error");
+
+            const form = event.target;
+            const line = form.machine_line.value;
+            const cause = form.machine_cause.value;
+            const action = '-';
+            const qty = 0;
+            
+            const imgPreview = document.getElementById('machine-img-preview');
+            const image = imgPreview && imgPreview.src && !imgPreview.classList.contains('hidden') && imgPreview.src.startsWith('data:') ? imgPreview.src : null;
+            
+            try {
+                if (window.submitMachineOnline && window.db) {
+                    await Promise.race([
+                        window.submitMachineOnline(line, cause, action, qty, image),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+                    ]);
+                    window.showToast("[설비고장] 내역이 보고되었습니다.", "error-theme");
+                } else {
+                    throw new Error("Offline/Local fallback");
+                }
+                form.reset();
+                window.clearImage('machine');
+            } catch(e) {
+                console.warn("Firestore write skipped/failed, saving locally:", e);
+                
+                const newMachine = {
+                    id: "local-" + Date.now(),
+                    type: '설비고장', line, cause, action, qty, image,
+                    date: new Date().toISOString().split('T')[0],
+                    timestamp: { toMillis: () => Date.now() }
+                };
+                window.defectData.unshift(newMachine);
+                window.updateDefectDashboard();
+                window.updateDefectTable();
+                
+                window.showToast("[설비고장] 로컬(메모리)에 저장되었습니다.", "error-theme");
+                form.reset();
+                window.clearImage('machine');
+            }
+        };
+
+        // 초기 UI 렌더링
+        window.updateProductionTable();
+        window.updateDefectDashboard();
+        window.updateDefectTable();
     </script>
 
     <!-- Firebase SDK 및 데이터 동기화 모듈 -->
@@ -413,7 +491,11 @@
                     setupDataListeners();
                     injectDummyDataIfEmptyOnline();
                 } else {
-                    window.currentUser = null;
+                    if (firebaseConfig.projectId === "demo-project") {
+                        window.currentUser = { uid: "dummy-operator", displayName: "데모 작업자" };
+                    } else {
+                        window.currentUser = null;
+                    }
                 }
             });
         }
@@ -494,65 +576,22 @@
                 console.error(e);
             }
         };
-
-        window.submitDefect = async function(event) {
-            event.preventDefault();
-            if(!window.currentUser) return window.showToast("권한이 없습니다.", "error");
-            if(!window.db) return window.showToast("데이터베이스 오류", "error");
-
-            const form = event.target;
-            const line = form.defect_line.value;
-            const cause = form.defect_cause.value;
-            const action = form.action_result.value;
-            const qty = 1;
-            
-            const imgPreview = document.getElementById('defect-img-preview');
-            const image = imgPreview && imgPreview.src && !imgPreview.classList.contains('hidden') && imgPreview.src.startsWith('data:') ? imgPreview.src : null;
-            
-            try {
-                const defRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'defects');
-                await addDoc(defRef, {
-                    type: '품질불량', line, cause, action, qty, image,
-                    date: new Date().toISOString().split('T')[0],
-                    timestamp: serverTimestamp()
-                });
-                window.showToast("[품질불량] 내역이 보고되었습니다.", "error-theme");
-                form.reset();
-                window.clearImage('defect');
-            } catch(e) {
-                window.showToast("보고 실패", "error");
-                console.error(e);
-            }
+        window.submitDefectOnline = async function(line, cause, action, qty, image) {
+            const defRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'defects');
+            await addDoc(defRef, {
+                type: '품질불량', line, cause, action, qty, image,
+                date: new Date().toISOString().split('T')[0],
+                timestamp: serverTimestamp()
+            });
         };
 
-        window.submitMachine = async function(event) {
-            event.preventDefault();
-            if(!window.currentUser) return window.showToast("권한이 없습니다.", "error");
-            if(!window.db) return window.showToast("데이터베이스 오류", "error");
-
-            const form = event.target;
-            const line = form.machine_line.value;
-            const cause = form.machine_cause.value;
-            const action = '-';
-            const qty = 0;
-            
-            const imgPreview = document.getElementById('machine-img-preview');
-            const image = imgPreview && imgPreview.src && !imgPreview.classList.contains('hidden') && imgPreview.src.startsWith('data:') ? imgPreview.src : null;
-            
-            try {
-                const defRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'defects');
-                await addDoc(defRef, {
-                    type: '설비고장', line, cause, action, qty, image,
-                    date: new Date().toISOString().split('T')[0],
-                    timestamp: serverTimestamp()
-                });
-                window.showToast("[설비고장] 내역이 보고되었습니다.", "error-theme");
-                form.reset();
-                window.clearImage('machine');
-            } catch(e) {
-                window.showToast("보고 실패", "error");
-                console.error(e);
-            }
+        window.submitMachineOnline = async function(line, cause, action, qty, image) {
+            const defRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'defects');
+            await addDoc(defRef, {
+                type: '설비고장', line, cause, action, qty, image,
+                date: new Date().toISOString().split('T')[0],
+                timestamp: serverTimestamp()
+            });
         };
 
         // Run init
