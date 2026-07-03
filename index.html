@@ -3,68 +3,58 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>현장 보고 및 확인 시스템</title>
+    <title>진성씨앤아이 통합 관제</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase SDK (데이터 저장용) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+        // 1. Firebase 콘솔에서 발급받은 본인의 설정을 아래에 넣으세요
+        const firebaseConfig = {
+            apiKey: "본인의_API_KEY",
+            authDomain: "본인의_프로젝트.firebaseapp.com",
+            projectId: "본인의_프로젝트",
+            storageBucket: "본인의_프로젝트.appspot.com",
+            messagingSenderId: "...",
+            appId: "..."
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        // 보고서 전송 함수
+        window.sendReport = async () => {
+            const text = document.getElementById('reportText').value;
+            if(!text) return alert("내용을 입력하세요");
+            
+            await addDoc(collection(db, "reports"), {
+                text: text,
+                timestamp: new Date()
+            });
+            alert("전송 완료!");
+            document.getElementById('reportText').value = '';
+        };
+
+        // 실시간 목록 불러오기 (데이터가 추가될 때마다 회장님 화면에 자동 갱신됩니다)
+        onSnapshot(query(collection(db, "reports"), orderBy("timestamp", "desc")), (snapshot) => {
+            const list = document.getElementById('reportList');
+            list.innerHTML = "";
+            snapshot.forEach(doc => {
+                const d = doc.data();
+                list.innerHTML += `<div class="bg-white p-4 rounded shadow mb-2">${d.text}</div>`;
+            });
+        });
+    </script>
 </head>
 <body class="bg-gray-100 p-4">
     <div class="max-w-md mx-auto">
-        <!-- 보고 작성 섹션 -->
-        <div class="bg-white p-6 rounded-lg shadow-lg mb-6">
-            <h1 class="text-2xl font-bold mb-4">현장 보고</h1>
-            <textarea id="reportText" class="w-full p-2 border rounded mb-4" rows="3" placeholder="보고 내용을 입력하세요..."></textarea>
-            <input type="file" id="imageInput" accept="image/*" class="mb-4">
-            <div id="previewContainer" class="mb-4 hidden">
-                <img id="preview" src="" alt="미리보기" class="w-full rounded shadow">
-            </div>
-            <button id="sendBtn" class="w-full bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700">전송하기</button>
-        </div>
-
-        <!-- 보고 목록 확인 섹션 -->
-        <h2 class="text-xl font-bold mb-3">보고 목록</h2>
-        <div id="reportList" class="space-y-4">
-            <!-- 보고 내용이 여기에 추가됩니다 -->
-        </div>
+        <h1 class="text-2xl font-bold mb-4">현장 보고</h1>
+        <textarea id="reportText" class="w-full p-2 border rounded mb-4" rows="3"></textarea>
+        <button onclick="sendReport()" class="w-full bg-blue-600 text-white py-2 rounded">전송하기</button>
+        
+        <h2 class="text-xl font-bold mt-8 mb-3">전체 보고 목록 (실시간)</h2>
+        <div id="reportList"></div>
     </div>
-
-    <script>
-        const reportList = document.getElementById('reportList');
-        const reportText = document.getElementById('reportText');
-        const imageInput = document.getElementById('imageInput');
-        const preview = document.getElementById('preview');
-        const previewContainer = document.getElementById('previewContainer');
-
-        // 이미지 미리보기
-        imageInput.addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (file) {
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    preview.src = e.target.result;
-                    previewContainer.classList.remove('hidden');
-                };
-                reader.readAsDataURL(file);
-            }
-        });
-
-        // 전송 및 목록 업데이트
-        document.getElementById('sendBtn').addEventListener('click', () => {
-            if (!reportText.value && !preview.src) return;
-
-            const card = document.createElement('div');
-            card.className = "bg-white p-4 rounded-lg shadow";
-            card.innerHTML = `
-                <p class="text-gray-800 mb-2">${reportText.value}</p>
-                ${previewContainer.classList.contains('hidden') ? '' : `<img src="${preview.src}" class="w-full rounded mb-2">`}
-                <small class="text-gray-500">${new Date().toLocaleString()}</small>
-            `;
-            
-            reportList.prepend(card); // 최신 보고가 위로 오도록
-
-            // 초기화
-            reportText.value = '';
-            previewContainer.classList.add('hidden');
-            imageInput.value = '';
-        });
-    </script>
 </body>
 </html>
