@@ -2,59 +2,848 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>진성씨앤아이 통합 관제</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>진성씨앤아이 스마트 팩토리 통합 관제</title>
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Firebase SDK (데이터 저장용) -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- SheetJS (Excel Export) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    
+    <!-- 공통 UI 및 데이터 처리 스크립트 -->
+    <script>
+        window.productionData = [];
+        window.defectData = [];
+        window.currentUser = { uid: "dummy-operator" }; // 기본 더미 세팅 (오프라인/검증 대비)
+        window.db = null;
+        window.auth = null;
+        window.appId = 'jinsung-factory-app';
 
-        // 1. Firebase 콘솔에서 발급받은 본인의 설정을 아래에 넣으세요
-        const firebaseConfig = {
-            apiKey: "본인의_API_KEY",
-            authDomain: "본인의_프로젝트.firebaseapp.com",
-            projectId: "본인의_프로젝트",
-            storageBucket: "본인의_프로젝트.appspot.com",
-            messagingSenderId: "...",
-            appId: "..."
-        };
+        let lineChartInstance = null;
+        let actionChartInstance = null;
 
-        const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
-
-        // 보고서 전송 함수
-        window.sendReport = async () => {
-            const text = document.getElementById('reportText').value;
-            if(!text) return alert("내용을 입력하세요");
+        // --- UI 전환 로직 ---
+        window.switchMainTab = function(tabName) {
+            document.getElementById('view-input').classList.add('hidden');
+            document.getElementById('view-dashboard').classList.add('hidden');
             
-            await addDoc(collection(db, "reports"), {
-                text: text,
-                timestamp: new Date()
-            });
-            alert("전송 완료!");
-            document.getElementById('reportText').value = '';
+            document.getElementById('nav-input').classList.remove('bg-indigo-700', 'text-white');
+            document.getElementById('nav-input').classList.add('text-indigo-200');
+            document.getElementById('nav-dashboard').classList.remove('bg-indigo-700', 'text-white');
+            document.getElementById('nav-dashboard').classList.add('text-indigo-200');
+
+            if(tabName === 'input') {
+                document.getElementById('view-input').classList.remove('hidden');
+                document.getElementById('nav-input').classList.add('bg-indigo-700', 'text-white');
+                document.getElementById('nav-input').classList.remove('text-indigo-200');
+            } else {
+                document.getElementById('view-dashboard').classList.remove('hidden');
+                document.getElementById('nav-dashboard').classList.add('bg-indigo-700', 'text-white');
+                document.getElementById('nav-dashboard').classList.remove('text-indigo-200');
+                // Redraw charts when switching to dashboard in case canvas size changed
+                if (window.renderCharts) {
+                    let totalDefects = 0, scrap = 0, rework = 0, machineErrors = 0;
+                    const lineCount = {};
+                    window.defectData.forEach(d => {
+                        if(d.type === '품질불량') {
+                            totalDefects += d.qty;
+                            if(d.action === '폐기') scrap += d.qty;
+                            if(d.action === '수정') rework += d.qty;
+                        } else if(d.type === '설비고장') {
+                            machineErrors += 1;
+                        }
+                        lineCount[d.line] = (lineCount[d.line] || 0) + 1;
+                    });
+                    window.renderCharts(lineCount, scrap, rework);
+                }
+            }
         };
 
-        // 실시간 목록 불러오기 (데이터가 추가될 때마다 회장님 화면에 자동 갱신됩니다)
-        onSnapshot(query(collection(db, "reports"), orderBy("timestamp", "desc")), (snapshot) => {
-            const list = document.getElementById('reportList');
-            list.innerHTML = "";
-            snapshot.forEach(doc => {
-                const d = doc.data();
-                list.innerHTML += `<div class="bg-white p-4 rounded shadow mb-2">${d.text}</div>`;
+        window.switchInputTab = function(tabId) {
+            const defForm = document.getElementById('form-defect');
+            const machineForm = document.getElementById('form-machine');
+            const tabDef = document.getElementById('tab-defect');
+            const tabMachine = document.getElementById('tab-machine');
+
+            if (tabId === 'defect') {
+                defForm.classList.remove('hidden');
+                machineForm.classList.add('hidden');
+                tabDef.className = "flex-1 py-3.5 text-center border-b-2 tab-active transition-colors text-red-600 border-red-600";
+                tabMachine.className = "flex-1 py-3.5 text-center border-b-2 tab-inactive transition-colors";
+            } else {
+                defForm.classList.add('hidden');
+                machineForm.classList.remove('hidden');
+                tabDef.className = "flex-1 py-3.5 text-center border-b-2 tab-inactive transition-colors";
+                tabMachine.className = "flex-1 py-3.5 text-center border-b-2 tab-active transition-colors text-amber-600 border-amber-500";
+            }
+        };
+
+        // --- 이미지 첨부 및 압축 로직 ---
+        window.handleImageUpload = function(event, type) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const statusEl = document.getElementById(`${type}-img-status`);
+            if (statusEl) statusEl.textContent = "압축 중...";
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    const maxDim = 600;
+                    let width = img.width;
+                    let height = img.height;
+
+                    if (width > maxDim || height > maxDim) {
+                        if (width > height) {
+                            height = Math.round((height * maxDim) / width);
+                            width = maxDim;
+                        } else {
+                            width = Math.round((width * maxDim) / height);
+                            height = maxDim;
+                        }
+                    }
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
+
+                    const imgPreview = document.getElementById(`${type}-img-preview`);
+                    const imgContainer = document.getElementById(`${type}-img-container`);
+
+                    if (imgPreview && imgContainer) {
+                        imgPreview.src = compressedBase64;
+                        imgContainer.classList.remove('hidden');
+                    }
+                    if (statusEl) statusEl.textContent = file.name;
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        };
+
+        window.clearImage = function(type) {
+            const imgPreview = document.getElementById(`${type}-img-preview`);
+            const imgContainer = document.getElementById(`${type}-img-container`);
+            const imgStatus = document.getElementById(`${type}-img-status`);
+            
+            if (imgPreview) imgPreview.src = '';
+            if (imgContainer) imgContainer.classList.add('hidden');
+            if (imgStatus) imgStatus.textContent = '선택된 파일 없음';
+            
+            const fileInput = document.getElementById(`${type}-file-input`);
+            if (fileInput) fileInput.value = '';
+        };
+
+        // --- 이미지 상세 모달 ---
+        window.openImageModal = function(imageSrc) {
+            const modal = document.getElementById('image-modal');
+            const img = document.getElementById('modal-image-view');
+            if (modal && img) {
+                img.src = imageSrc;
+                modal.classList.remove('hidden');
+                setTimeout(() => {
+                    modal.firstElementChild.classList.remove('scale-95');
+                    modal.firstElementChild.classList.add('scale-100');
+                }, 50);
+            }
+        };
+
+        window.closeImageModal = function() {
+            const modal = document.getElementById('image-modal');
+            if (modal) {
+                modal.firstElementChild.classList.remove('scale-100');
+                modal.firstElementChild.classList.add('scale-95');
+                setTimeout(() => {
+                    modal.classList.add('hidden');
+                    const img = document.getElementById('modal-image-view');
+                    if (img) img.src = '';
+                }, 200);
+            }
+        };
+
+        // --- UI 업데이트 로직 ---
+        window.updateProductionTable = function() {
+            const tbody = document.getElementById('table-body-prod');
+            if(!tbody) return;
+            tbody.innerHTML = '';
+            
+            window.productionData.slice(0, 5).forEach(d => { // 최근 5건만
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-slate-50 border-b border-slate-100 text-sm';
+                tr.innerHTML = `
+                    <td class="px-4 py-3 whitespace-nowrap text-slate-500">${d.date}</td>
+                    <td class="px-4 py-3 whitespace-nowrap font-medium text-slate-800">${d.line}</td>
+                    <td class="px-4 py-3 whitespace-nowrap">${d.part}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-right font-bold text-indigo-600">${d.qty} EA</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-slate-500">${d.worker}</td>
+                `;
+                tbody.appendChild(tr);
             });
-        });
+        };
+
+        window.updateDefectTable = function() {
+            const tbody = document.getElementById('table-body-defect');
+            if(!tbody) return;
+            tbody.innerHTML = '';
+            
+            window.defectData.forEach(d => {
+                let badgeHtml = '';
+                if(d.type === '설비고장') badgeHtml = `<span class="px-2 py-1 text-xs font-semibold rounded bg-amber-100 text-amber-700 border border-amber-200">설비고장</span>`;
+                else if(d.action === '폐기') badgeHtml = `<span class="px-2 py-1 text-xs font-semibold rounded bg-red-100 text-red-700 border border-red-200">폐기</span>`;
+                else badgeHtml = `<span class="px-2 py-1 text-xs font-semibold rounded bg-emerald-100 text-emerald-700 border border-emerald-200">수정</span>`;
+
+                let photoHtml = '';
+                if(d.image) {
+                    photoHtml = `<button onclick="openImageModal('${d.image}')" class="text-indigo-600 hover:text-indigo-900 transition flex items-center justify-center mx-auto w-8 h-8 rounded-lg bg-indigo-50 border border-indigo-100 hover:bg-indigo-100" title="사진 보기"><i class="fa-solid fa-image"></i></button>`;
+                } else {
+                    photoHtml = `<span class="text-slate-300">-</span>`;
+                }
+
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-slate-50 border-b border-slate-100 text-sm';
+                tr.innerHTML = `
+                    <td class="px-4 py-3 whitespace-nowrap text-slate-500">${d.date}</td>
+                    <td class="px-4 py-3 whitespace-nowrap font-medium text-slate-800">${d.line}</td>
+                    <td class="px-4 py-3 whitespace-nowrap">${badgeHtml}</td>
+                    <td class="px-4 py-3 text-slate-700 truncate max-w-xs">${d.cause}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-center">${photoHtml}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        };
+
+        window.updateDefectDashboard = function() {
+            let totalDefects = 0, scrap = 0, rework = 0, machineErrors = 0;
+            const lineCount = {};
+
+            window.defectData.forEach(d => {
+                if(d.type === '품질불량') {
+                    totalDefects += d.qty;
+                    if(d.action === '폐기') scrap += d.qty;
+                    if(d.action === '수정') rework += d.qty;
+                } else if(d.type === '설비고장') {
+                    machineErrors += 1;
+                }
+                
+                lineCount[d.line] = (lineCount[d.line] || 0) + 1; // 발생 건수 기준
+            });
+
+            // 가장 문제 많은 라인 찾기
+            let worstLine = '-';
+            let maxErr = 0;
+            for(const [line, count] of Object.entries(lineCount)) {
+                if(count > maxErr) { maxErr = count; worstLine = line; }
+            }
+
+            // Update KPI Cards
+            const elScrap = document.getElementById('kpi-scrap');
+            const elRework = document.getElementById('kpi-rework');
+            const elMachine = document.getElementById('kpi-machine');
+            const elWorst = document.getElementById('kpi-worst-line');
+
+            if(elScrap) elScrap.innerHTML = `${scrap}<span class="text-sm font-normal text-slate-500 ml-1">EA</span>`;
+            if(elRework) elRework.innerHTML = `${rework}<span class="text-sm font-normal text-slate-500 ml-1">EA</span>`;
+            if(elMachine) elMachine.innerHTML = `${machineErrors}<span class="text-sm font-normal text-slate-500 ml-1">건</span>`;
+            if(elWorst) elWorst.innerText = worstLine;
+
+            window.renderCharts(lineCount, scrap, rework);
+        };
+
+        window.renderCharts = function(lineCount, scrap, rework) {
+            if(lineChartInstance) lineChartInstance.destroy();
+            if(actionChartInstance) actionChartInstance.destroy();
+
+            const ctxLine = document.getElementById('lineChart');
+            if(!ctxLine) return;
+
+            lineChartInstance = new Chart(ctxLine.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: Object.keys(lineCount),
+                    datasets: [{
+                        label: '발생 건수',
+                        data: Object.values(lineCount),
+                        backgroundColor: '#6366f1',
+                        borderRadius: 4,
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } }, x: { grid: { display: false } } }
+                }
+            });
+
+            const ctxAction = document.getElementById('actionChart');
+            if(!ctxAction) return;
+            
+            actionChartInstance = new Chart(ctxAction.getContext('2d'), {
+                type: 'doughnut',
+                data: {
+                    labels: ['폐기', '수정'],
+                    datasets: [{
+                        data: [scrap, rework],
+                        backgroundColor: ['#ef4444', '#10b981'],
+                        borderWidth: 0, hoverOffset: 4
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false, cutout: '70%',
+                    plugins: { legend: { position: 'bottom' } }
+                }
+            });
+        };
+
+        // --- 유틸리티 ---
+        window.showToast = function(message, type = "success") {
+            const toast = document.getElementById('toast');
+            const msgEl = document.getElementById('toast-msg');
+            const icon = toast.querySelector('i');
+            if (!toast || !msgEl || !icon) return;
+            
+            msgEl.innerText = message;
+            
+            if(type === 'error') {
+                icon.className = "fa-solid fa-triangle-exclamation text-red-400";
+            } else if (type === 'error-theme') {
+                icon.className = "fa-solid fa-bell text-amber-400";
+            } else {
+                icon.className = "fa-solid fa-check-circle text-green-400";
+            }
+            
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            toast.classList.add('translate-y-0', 'opacity-100');
+
+            setTimeout(() => {
+                toast.classList.remove('translate-y-0', 'opacity-100');
+                toast.classList.add('translate-y-20', 'opacity-0');
+            }, 3000);
+        };
+
+        window.exportToExcel = function() {
+            if(window.defectData.length === 0) return window.showToast("추출할 불량 데이터가 없습니다.", "error");
+
+            const exportData = window.defectData.map(item => ({
+                "일자": item.date,
+                "발생 라인": item.line,
+                "유형": item.type,
+                "상세 원인": item.cause,
+                "조치 결과": item.action,
+                "수량": item.qty,
+                "사진 첨부": item.image ? "Y" : "N"
+            }));
+
+            const worksheet = XLSX.utils.json_to_sheet(exportData);
+            const workbook = XLSX.utils.book_new();
+            worksheet['!cols'] = [{ wch: 12 }, { wch: 15 }, { wch: 10 }, { wch: 40 }, { wch: 10 }, { wch: 5 }, { wch: 10 }];
+            XLSX.utils.book_append_sheet(workbook, worksheet, "불량내역");
+            XLSX.writeFile(workbook, "진성씨앤아이_불량리포트.xlsx");
+        };
+
+        // 시연을 위한 초기 더미 데이터 주입 함수 (DB가 비어있을 때만)
+        window.injectDummyDataIfEmpty = async function() {
+             if (!window.db) {
+                 window.defectData = [
+                    { type: '품질불량', line: '수동 라인', cause: '원소재 흑피 불량', action: '수정', qty: 2, date: '2026-06-10' },
+                    { type: '품질불량', line: '자동화 라인', cause: '소재 세팅 불량으로 인한 치수 미달', action: '폐기', qty: 1, date: '2026-06-20' },
+                    { type: '설비고장', line: '자동화 라인', cause: '심압대 T/S QUILL 센서 오작동 정지', action: '-', qty: 0, date: '2026-06-24' }
+                 ];
+                 window.productionData = [
+                    { line: '자동화 라인', part: '61NA-40052', qty: 150, worker: '엄 파트장', date: '2026-06-24' },
+                    { line: '수동 라인', part: '14792484', qty: 85, worker: '김형기', date: '2026-06-24' }
+                 ];
+                 window.updateProductionTable();
+                 window.updateDefectDashboard();
+                 window.updateDefectTable();
+                 return;
+             }
+        };
+
+        // Run init
+        // initAuth is called in the module script block below
     </script>
-</head>
-<body class="bg-gray-100 p-4">
-    <div class="max-w-md mx-auto">
-        <h1 class="text-2xl font-bold mb-4">현장 보고</h1>
-        <textarea id="reportText" class="w-full p-2 border rounded mb-4" rows="3"></textarea>
-        <button onclick="sendReport()" class="w-full bg-blue-600 text-white py-2 rounded">전송하기</button>
+
+    <!-- Firebase SDK 및 데이터 동기화 모듈 -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+
+        // Firebase Configuration
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            projectId: "demo-project"
+        };
         
-        <h2 class="text-xl font-bold mt-8 mb-3">전체 보고 목록 (실시간)</h2>
-        <div id="reportList"></div>
+        try {
+            const app = initializeApp(firebaseConfig);
+            window.db = getFirestore(app);
+            window.auth = getAuth(app);
+            window.appId = typeof __app_id !== 'undefined' ? __app_id : 'jinsung-factory-app';
+        } catch (e) {
+            console.error("Firebase initialization failed in module:", e);
+        }
+
+        // Initialize Auth
+        async function initAuth() {
+            if (!window.auth) return;
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(window.auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(window.auth);
+                }
+            } catch (error) {
+                console.error("Auth error:", error);
+                window.showToast("인증 실패. 시스템을 재시작해주세요.", "error");
+            }
+        }
+
+        if (window.auth) {
+            onAuthStateChanged(window.auth, (user) => {
+                if (user) {
+                    window.currentUser = user;
+                    setupDataListeners();
+                    injectDummyDataIfEmptyOnline();
+                } else {
+                    window.currentUser = null;
+                }
+            });
+        }
+
+        function setupDataListeners() {
+            if (!window.currentUser || !window.db) return;
+            
+            const prodRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'production');
+            const defRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'defects');
+
+            // 생산 데이터 리스너
+            onSnapshot(prodRef, (snapshot) => {
+                window.productionData = [];
+                snapshot.forEach(doc => {
+                    window.productionData.push({ id: doc.id, ...doc.data() });
+                });
+                window.productionData.sort((a, b) => b.timestamp?.toMillis() - a.timestamp?.toMillis() || 0);
+                window.updateProductionTable();
+            }, (error) => {
+                console.error("생산 데이터 로드 에러:", error);
+            });
+
+            // 불량 데이터 리스너
+            onSnapshot(defRef, (snapshot) => {
+                window.defectData = [];
+                snapshot.forEach(doc => {
+                    window.defectData.push({ id: doc.id, ...doc.data() });
+                });
+                window.defectData.sort((a, b) => b.timestamp?.toMillis() - a.timestamp?.toMillis() || 0);
+                window.updateDefectDashboard();
+                window.updateDefectTable();
+            }, (error) => {
+                console.error("불량 데이터 로드 에러:", error);
+            });
+        }
+
+        async function injectDummyDataIfEmptyOnline() {
+            if (!window.db) return;
+            const defRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'defects');
+            onSnapshot(query(defRef), async (snapshot) => {
+                if(snapshot.empty && window.currentUser) {
+                    console.log("더미 데이터 주입 시작...");
+                    const dummyDefects = [
+                       { type: '품질불량', line: '수동 라인', cause: '원소재 흑피 불량', action: '수정', qty: 2, date: '2026-06-10' },
+                       { type: '품질불량', line: '자동화 라인', cause: '소재 세팅 불량으로 인한 치수 미달', action: '폐기', qty: 1, date: '2026-06-20' },
+                       { type: '설비고장', line: '자동화 라인', cause: '심압대 T/S QUILL 센서 오작동 정지', action: '-', qty: 0, date: '2026-06-24' }
+                    ];
+                    for(const d of dummyDefects) {
+                        await addDoc(defRef, {...d, timestamp: serverTimestamp()});
+                    }
+                }
+            });
+        }
+
+        // --- 폼 제출 로직 (Firestore 저장) ---
+        window.submitProduction = async function(event) {
+            event.preventDefault();
+            if(!window.currentUser) return window.showToast("권한이 없습니다.", "error");
+            if(!window.db) return window.showToast("데이터베이스 오류", "error");
+
+            const form = event.target;
+            const line = form.prod_line.value;
+            const part = form.prod_part.value;
+            const qty = parseInt(form.prod_qty.value);
+            const worker = form.prod_worker.value;
+
+            try {
+                const prodRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'production');
+                await addDoc(prodRef, {
+                    line, part, qty, worker,
+                    date: new Date().toISOString().split('T')[0],
+                    timestamp: serverTimestamp()
+                });
+                window.showToast("생산 실적이 전송되었습니다.", "success");
+                form.reset();
+            } catch(e) {
+                window.showToast("전송 실패", "error");
+                console.error(e);
+            }
+        };
+
+        window.submitDefect = async function(event) {
+            event.preventDefault();
+            if(!window.currentUser) return window.showToast("권한이 없습니다.", "error");
+            if(!window.db) return window.showToast("데이터베이스 오류", "error");
+
+            const form = event.target;
+            const line = form.defect_line.value;
+            const cause = form.defect_cause.value;
+            const action = form.action_result.value;
+            const qty = 1;
+            
+            const imgPreview = document.getElementById('defect-img-preview');
+            const image = imgPreview && imgPreview.src && !imgPreview.classList.contains('hidden') && imgPreview.src.startsWith('data:') ? imgPreview.src : null;
+            
+            try {
+                const defRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'defects');
+                await addDoc(defRef, {
+                    type: '품질불량', line, cause, action, qty, image,
+                    date: new Date().toISOString().split('T')[0],
+                    timestamp: serverTimestamp()
+                });
+                window.showToast("[품질불량] 내역이 보고되었습니다.", "error-theme");
+                form.reset();
+                window.clearImage('defect');
+            } catch(e) {
+                window.showToast("보고 실패", "error");
+                console.error(e);
+            }
+        };
+
+        window.submitMachine = async function(event) {
+            event.preventDefault();
+            if(!window.currentUser) return window.showToast("권한이 없습니다.", "error");
+            if(!window.db) return window.showToast("데이터베이스 오류", "error");
+
+            const form = event.target;
+            const line = form.machine_line.value;
+            const cause = form.machine_cause.value;
+            const action = '-';
+            const qty = 0;
+            
+            const imgPreview = document.getElementById('machine-img-preview');
+            const image = imgPreview && imgPreview.src && !imgPreview.classList.contains('hidden') && imgPreview.src.startsWith('data:') ? imgPreview.src : null;
+            
+            try {
+                const defRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'defects');
+                await addDoc(defRef, {
+                    type: '설비고장', line, cause, action, qty, image,
+                    date: new Date().toISOString().split('T')[0],
+                    timestamp: serverTimestamp()
+                });
+                window.showToast("[설비고장] 내역이 보고되었습니다.", "error-theme");
+                form.reset();
+                window.clearImage('machine');
+            } catch(e) {
+                window.showToast("보고 실패", "error");
+                console.error(e);
+            }
+        };
+
+        // Run init
+        initAuth();
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
+        body { font-family: 'Noto Sans KR', sans-serif; background-color: #f8fafc; -webkit-tap-highlight-color: transparent; }
+        .touch-target { min-height: 48px; }
+        .tab-active { border-bottom-color: #4f46e5; color: #4f46e5; font-weight: 700; }
+        .tab-inactive { border-bottom-color: transparent; color: #64748b; font-weight: 500; }
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        /* 스크롤바 숨기기 (모바일 뷰어 느낌) */
+        ::-webkit-scrollbar { width: 0px; background: transparent; }
+    </style>
+</head>
+<body class="text-slate-800 h-screen flex flex-col overflow-hidden">
+
+    <!-- 상단 글로벌 네비게이션 (데스크톱/모바일 공용) -->
+    <header class="bg-indigo-800 text-white shadow-md flex-shrink-0 z-20">
+        <div class="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <i class="fa-solid fa-industry text-2xl text-indigo-300"></i>
+                <span class="font-bold text-xl tracking-tight hidden sm:inline">진성씨앤아이 관제 시스템</span>
+                <span class="font-bold text-lg tracking-tight sm:hidden">진성 관제</span>
+            </div>
+            
+            <div class="flex gap-1">
+                <button onclick="switchMainTab('input')" id="nav-input" class="px-4 py-2 rounded-lg font-medium bg-indigo-700 text-white transition-colors">
+                    <i class="fa-solid fa-mobile-screen mr-1"></i><span class="hidden sm:inline">현장 입력</span>
+                </button>
+                <button onclick="switchMainTab('dashboard')" id="nav-dashboard" class="px-4 py-2 rounded-lg font-medium text-indigo-200 hover:text-white transition-colors">
+                    <i class="fa-solid fa-chart-line mr-1"></i><span class="hidden sm:inline">대시보드</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- 메인 컨테이너 (스크롤 영역) -->
+    <main class="flex-1 overflow-y-auto relative bg-slate-100">
+        
+        <!-- ========================================== -->
+        <!-- VIEW 1: 현장 데이터 입력 앱 (모바일 최적화 UI) -->
+        <!-- ========================================== -->
+        <div id="view-input" class="max-w-md mx-auto p-4 pb-24 fade-in">
+            
+            <!-- 탭 메뉴 -->
+            <div class="flex bg-white rounded-xl shadow-sm mb-4 overflow-hidden border border-slate-200">
+                <button onclick="switchInputTab('defect')" id="tab-defect" class="flex-1 py-3.5 text-center border-b-2 tab-active transition-colors text-red-600 border-red-600">
+                    <i class="fa-solid fa-triangle-exclamation mr-1"></i>불량 신고
+                </button>
+                <button onclick="switchInputTab('machine')" id="tab-machine" class="flex-1 py-3.5 text-center border-b-2 tab-inactive transition-colors">
+                    <i class="fa-solid fa-wrench mr-1"></i>장비 고장
+                </button>
+            </div>
+
+            <!-- 불량 신고 폼 -->
+            <form id="form-defect" class="fade-in space-y-4" onsubmit="submitDefect(event)">
+                <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-5">
+                     <div>
+                        <label class="block text-sm font-bold text-slate-700 mb-2">발생 라인</label>
+                        <select name="defect_line" class="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-lg focus:ring-red-500 focus:border-red-500 p-3 touch-target" required>
+                            <option value="" disabled selected>라인을 선택하세요</option>
+                            <option value="자동화 라인">자동화 라인</option>
+                            <option value="수동 라인">수동 라인</option>
+                            <option value="로봇 CNC">로봇 CNC</option>
+                            <option value="로크드릴 MCT">로크드릴 MCT</option>
+                            <option value="겐트리 라인">겐트리 라인</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold text-slate-700 mb-2">발생 원인 / 내용 (상세히)</label>
+                        <textarea name="defect_cause" rows="3" class="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-lg focus:ring-red-500 focus:border-red-500 p-3" placeholder="예: 치수 불량, 외관 찍힘 등..." required></textarea>
+                    </div>
+                    
+                    <div id="action_section">
+                        <label class="block text-sm font-bold text-slate-700 mb-2">조치 결과</label>
+                        <div class="grid grid-cols-2 gap-3">
+                            <label class="cursor-pointer">
+                                <input type="radio" name="action_result" value="폐기" class="peer sr-only">
+                                <div class="text-center px-2 py-2.5 border-2 border-slate-200 rounded-lg peer-checked:border-red-500 peer-checked:text-red-600 peer-checked:bg-red-50 font-bold transition text-sm">
+                                    완전 폐기 (Scrap)
+                                </div>
+                            </label>
+                            <label class="cursor-pointer">
+                                <input type="radio" name="action_result" value="수정" class="peer sr-only" checked>
+                                <div class="text-center px-2 py-2.5 border-2 border-slate-200 rounded-lg peer-checked:border-emerald-500 peer-checked:text-emerald-600 peer-checked:bg-emerald-50 font-bold transition text-sm">
+                                    수정 가능 (Rework)
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- 사진 첨부 -->
+                    <div>
+                        <label class="block text-sm font-bold text-slate-700 mb-2">현장 사진 첨부 (선택)</label>
+                        <div class="flex items-center gap-3">
+                            <label class="cursor-pointer flex items-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-300 transition text-sm font-medium touch-target">
+                                <i class="fa-solid fa-camera text-slate-500"></i>
+                                <span>사진 선택</span>
+                                <input type="file" id="defect-file-input" accept="image/*" class="hidden" onchange="handleImageUpload(event, 'defect')">
+                            </label>
+                            <span id="defect-img-status" class="text-xs text-slate-500 truncate max-w-[180px]">선택된 파일 없음</span>
+                        </div>
+                        <div id="defect-img-container" class="mt-3 relative hidden w-full rounded-lg overflow-hidden border border-slate-200 bg-slate-50 max-h-48 flex justify-center items-center">
+                            <img id="defect-img-preview" src="" alt="Defect preview" class="max-h-48 object-contain">
+                            <button type="button" onclick="clearImage('defect')" class="absolute top-2 right-2 bg-red-600 hover:bg-red-700 text-white rounded-full p-1.5 shadow-md flex items-center justify-center transition">
+                                <i class="fa-solid fa-xmark text-xs w-3 h-3"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" class="w-full text-white bg-red-600 hover:bg-red-700 focus:ring-4 focus:ring-red-300 font-bold rounded-xl text-lg px-5 py-4 text-center touch-target shadow-md transition-transform active:scale-95">
+                    <i class="fa-solid fa-triangle-exclamation mr-2"></i>불량 즉시 보고
+                </button>
+            </form>
+
+            <!-- 장비 고장 폼 -->
+            <form id="form-machine" class="fade-in space-y-4 hidden" onsubmit="submitMachine(event)">
+                <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-5">
+                     <div>
+                        <label class="block text-sm font-bold text-slate-700 mb-2">발생 라인 / 설비</label>
+                        <select name="machine_line" class="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-lg focus:ring-amber-500 focus:border-amber-500 p-3 touch-target" required>
+                            <option value="" disabled selected>라인을 선택하세요</option>
+                            <option value="자동화 라인">자동화 라인</option>
+                            <option value="수동 라인">수동 라인</option>
+                            <option value="로봇 CNC">로봇 CNC</option>
+                            <option value="로크드릴 MCT">로크드릴 MCT</option>
+                            <option value="겐트리 라인">겐트리 라인</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold text-slate-700 mb-2">발생 원인 / 내용 (상세히)</label>
+                        <textarea name="machine_cause" rows="3" class="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-lg focus:ring-amber-500 focus:border-amber-500 p-3" placeholder="예: 퀼 센서 오작동 정지, 모터 온도 과열 등..." required></textarea>
+                    </div>
+
+                    <!-- 사진 첨부 -->
+                    <div>
+                        <label class="block text-sm font-bold text-slate-700 mb-2">현장 사진 첨부 (선택)</label>
+                        <div class="flex items-center gap-3">
+                            <label class="cursor-pointer flex items-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-300 transition text-sm font-medium touch-target">
+                                <i class="fa-solid fa-camera text-slate-500"></i>
+                                <span>사진 선택</span>
+                                <input type="file" id="machine-file-input" accept="image/*" class="hidden" onchange="handleImageUpload(event, 'machine')">
+                            </label>
+                            <span id="machine-img-status" class="text-xs text-slate-500 truncate max-w-[180px]">선택된 파일 없음</span>
+                        </div>
+                        <div id="machine-img-container" class="mt-3 relative hidden w-full rounded-lg overflow-hidden border border-slate-200 bg-slate-50 max-h-48 flex justify-center items-center">
+                            <img id="machine-img-preview" src="" alt="Machine preview" class="max-h-48 object-contain">
+                            <button type="button" onclick="clearImage('machine')" class="absolute top-2 right-2 bg-red-600 hover:bg-red-700 text-white rounded-full p-1.5 shadow-md flex items-center justify-center transition">
+                                <i class="fa-solid fa-xmark text-xs w-3 h-3"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" class="w-full text-white bg-amber-500 hover:bg-amber-600 focus:ring-4 focus:ring-amber-300 font-bold rounded-xl text-lg px-5 py-4 text-center touch-target shadow-md transition-transform active:scale-95">
+                    <i class="fa-solid fa-wrench mr-2"></i>고장 즉시 보고
+                </button>
+            </form>
+        </div>
+
+
+        <!-- ========================================== -->
+        <!-- VIEW 2: 통합 대시보드 (데스크톱 최적화 UI) -->
+        <!-- ========================================== -->
+        <div id="view-dashboard" class="max-w-6xl mx-auto p-4 sm:p-6 lg:p-8 fade-in hidden pb-24">
+            
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-2xl font-bold text-slate-800"><i class="fa-solid fa-chart-pie text-indigo-600 mr-2"></i>실시간 현장 현황</h2>
+                <button onclick="exportToExcel()" class="bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium py-2 px-4 rounded-lg shadow-sm transition text-sm flex items-center">
+                    <i class="fa-solid fa-file-excel text-green-600 mr-2"></i>엑셀 다운로드
+                </button>
+            </div>
+
+            <!-- KPI Cards -->
+            <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+                <div class="bg-white rounded-xl shadow-sm p-5 border border-slate-100 flex items-center justify-between">
+                    <div>
+                        <p class="text-xs font-medium text-slate-500 mb-1">설비 고장 (알람)</p>
+                        <h3 class="text-2xl font-bold text-amber-500" id="kpi-machine">0</h3>
+                    </div>
+                    <div class="w-10 h-10 bg-amber-50 rounded-full flex items-center justify-center text-amber-500"><i class="fa-solid fa-wrench"></i></div>
+                </div>
+                <div class="bg-white rounded-xl shadow-sm p-5 border border-slate-100 flex items-center justify-between">
+                    <div>
+                        <p class="text-xs font-medium text-slate-500 mb-1">품질: 폐기(Scrap)</p>
+                        <h3 class="text-2xl font-bold text-red-600" id="kpi-scrap">0</h3>
+                    </div>
+                    <div class="w-10 h-10 bg-red-50 rounded-full flex items-center justify-center text-red-600"><i class="fa-solid fa-trash-can"></i></div>
+                </div>
+                <div class="bg-white rounded-xl shadow-sm p-5 border border-slate-100 flex items-center justify-between">
+                    <div>
+                        <p class="text-xs font-medium text-slate-500 mb-1">품질: 수정(Rework)</p>
+                        <h3 class="text-2xl font-bold text-emerald-600" id="kpi-rework">0</h3>
+                    </div>
+                    <div class="w-10 h-10 bg-emerald-50 rounded-full flex items-center justify-center text-emerald-600"><i class="fa-solid fa-screwdriver-wrench"></i></div>
+                </div>
+                <div class="bg-white rounded-xl shadow-sm p-5 border border-slate-100 flex items-center justify-between">
+                    <div>
+                        <p class="text-xs font-medium text-slate-500 mb-1">최다 문제 라인</p>
+                        <h3 class="text-lg font-bold text-slate-800 mt-1 truncate max-w-[100px]" id="kpi-worst-line">-</h3>
+                    </div>
+                    <div class="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center text-slate-600"><i class="fa-solid fa-industry"></i></div>
+                </div>
+            </div>
+
+            <!-- Charts -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+                <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-100 lg:col-span-2">
+                    <h3 class="text-sm font-bold mb-4 text-slate-600">라인별 문제 발생 빈도</h3>
+                    <div class="relative h-48 w-full"><canvas id="lineChart"></canvas></div>
+                </div>
+                <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-100">
+                    <h3 class="text-sm font-bold mb-4 text-slate-600">품질 불량 조치 비율</h3>
+                    <div class="relative h-48 w-full flex justify-center"><canvas id="actionChart"></canvas></div>
+                </div>
+            </div>
+
+            <!-- Data Tables -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <!-- 불량 이력 테이블 -->
+                <div class="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+                    <div class="px-5 py-3 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+                        <h3 class="text-sm font-bold text-slate-800"><i class="fa-solid fa-triangle-exclamation text-red-500 mr-2"></i>실시간 불량/고장 이력</h3>
+                    </div>
+                    <div class="overflow-x-auto h-64">
+                        <table class="w-full text-left">
+                            <thead class="text-xs text-slate-500 bg-slate-50 sticky top-0 z-10 border-b border-slate-200">
+                                <tr>
+                                    <th class="px-4 py-2">일자</th>
+                                    <th class="px-4 py-2">라인</th>
+                                    <th class="px-4 py-2">조치</th>
+                                    <th class="px-4 py-2">사유</th>
+                                    <th class="px-4 py-2 text-center">사진</th>
+                                </tr>
+                            </thead>
+                            <tbody id="table-body-defect" class="divide-y divide-slate-100"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- 생산 실적 테이블 -->
+                <div class="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+                    <div class="px-5 py-3 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+                        <h3 class="text-sm font-bold text-slate-800"><i class="fa-solid fa-box-open text-indigo-500 mr-2"></i>최근 생산 실적 로그</h3>
+                    </div>
+                    <div class="overflow-x-auto h-64">
+                        <table class="w-full text-left">
+                            <thead class="text-xs text-slate-500 bg-slate-50 sticky top-0 z-10 border-b border-slate-200">
+                                <tr>
+                                    <th class="px-4 py-2">일자</th>
+                                    <th class="px-4 py-2">라인</th>
+                                    <th class="px-4 py-2">품번</th>
+                                    <th class="px-4 py-2 text-right">수량</th>
+                                    <th class="px-4 py-2">작업자</th>
+                                </tr>
+                            </thead>
+                            <tbody id="table-body-prod" class="divide-y divide-slate-100"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+    </main>
+
+    <!-- 글로벌 토스트 메시지 -->
+    <div id="toast" class="fixed bottom-6 left-1/2 transform -translate-x-1/2 translate-y-20 opacity-0 bg-slate-800 text-white px-6 py-3 rounded-full shadow-2xl text-sm font-bold transition-all duration-300 pointer-events-none z-50 flex items-center gap-2 whitespace-nowrap">
+        <i class="fa-solid fa-check-circle text-green-400 text-lg"></i>
+        <span id="toast-msg">시스템 메시지</span>
     </div>
+
+    <!-- 이미지 상세 조회 모달 -->
+    <div id="image-modal" class="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4" onclick="closeImageModal()">
+        <div class="relative max-w-3xl w-full bg-white rounded-2xl overflow-hidden shadow-2xl transition-transform duration-300 scale-95" onclick="event.stopPropagation()">
+            <div class="p-4 border-b border-slate-100 flex items-center justify-between">
+                <h3 class="font-bold text-slate-800">첨부 사진 보기</h3>
+                <button onclick="closeImageModal()" class="text-slate-400 hover:text-slate-600 transition touch-target w-10 h-10 flex items-center justify-center">
+                    <i class="fa-solid fa-xmark text-xl"></i>
+                </button>
+            </div>
+            <div class="p-4 flex justify-center bg-slate-950 items-center min-h-[300px]">
+                <img id="modal-image-view" src="" alt="Full view" class="max-h-[70vh] object-contain rounded-lg">
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>
