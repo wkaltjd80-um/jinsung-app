@@ -369,12 +369,8 @@
                 type: form.defect_type.value,
                 action: form.action_result.value,
                 qty: parseInt(form.defect_qty.value) || 0,
-                cause: form.defect_cause.value,
-                image: null
+                cause: form.defect_cause.value
             };
-            
-            const imgPreview = document.getElementById('defect-img-preview');
-            payload.image = imgPreview && imgPreview.src && !imgPreview.classList.contains('hidden') && imgPreview.src.startsWith('data:') ? imgPreview.src : null;
             
             try {
                 if (window.submitDefectOnline && window.db) {
@@ -388,7 +384,6 @@
                 }
                 form.reset();
                 form.defect_date.value = new Date().toISOString().split('T')[0]; // 리셋 후 오늘 날짜로 재설정
-                window.clearImage('defect');
             } catch(e) {
                 console.warn("API write skipped/failed, saving locally:", e);
                 
@@ -404,7 +399,6 @@
                 window.showToast("[" + payload.type + "] 로컬(메모리)에 저장되었습니다.", "error-theme");
                 form.reset();
                 form.defect_date.value = new Date().toISOString().split('T')[0];
-                window.clearImage('defect');
             }
         };
 
@@ -418,27 +412,25 @@
             const action = '-';
             const qty = 0;
             
-            const imgPreview = document.getElementById('machine-img-preview');
-            const image = imgPreview && imgPreview.src && !imgPreview.classList.contains('hidden') && imgPreview.src.startsWith('data:') ? imgPreview.src : null;
-            
             try {
                 if (window.submitMachineOnline && window.db) {
                     await Promise.race([
-                        window.submitMachineOnline(line, cause, action, qty, image),
+                        window.submitMachineOnline(line, cause, action, qty),
                         new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
                     ]);
                     window.showToast("[설비고장] 내역이 보고되었습니다.", "error-theme");
                 } else {
                     throw new Error("Offline/Local fallback");
                 }
+                }
                 form.reset();
-                window.clearImage('machine');
             } catch(e) {
                 console.warn("Firestore write skipped/failed, saving locally:", e);
                 
                 const newMachine = {
+                const newMachine = {
                     id: "local-" + Date.now(),
-                    type: '설비고장', line, cause, action, qty, image,
+                    type: '설비고장', line, cause, action, qty,
                     date: new Date().toISOString().split('T')[0],
                     timestamp: { toMillis: () => Date.now() }
                 };
@@ -448,7 +440,6 @@
                 
                 window.showToast("[설비고장] 로컬(메모리)에 저장되었습니다.", "error-theme");
                 form.reset();
-                window.clearImage('machine');
             }
         };
 
@@ -635,24 +626,6 @@
                         document.getElementById('defect_date_input').value = new Date().toISOString().split('T')[0];
                     </script>
 
-                    <!-- 사진 첨부 -->
-                    <div>
-                        <label class="block text-sm font-bold text-slate-700 mb-2">현장 사진 첨부 (선택)</label>
-                        <div class="flex items-center gap-3">
-                            <label class="cursor-pointer flex items-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-300 transition text-sm font-medium touch-target">
-                                <i class="fa-solid fa-camera text-slate-500"></i>
-                                <span>사진 선택</span>
-                                <input type="file" id="defect-file-input" accept="image/*" class="hidden" onchange="handleImageUpload(event, 'defect')">
-                            </label>
-                            <span id="defect-img-status" class="text-xs text-slate-500 truncate max-w-[180px]">선택된 파일 없음</span>
-                        </div>
-                        <div id="defect-img-container" class="mt-3 relative hidden w-full rounded-lg overflow-hidden border border-slate-200 bg-slate-50 max-h-48 flex justify-center items-center">
-                            <img id="defect-img-preview" src="" alt="Defect preview" class="max-h-48 object-contain">
-                            <button type="button" onclick="clearImage('defect')" class="absolute top-2 right-2 bg-red-600 hover:bg-red-700 text-white rounded-full p-1.5 shadow-md flex items-center justify-center transition">
-                                <i class="fa-solid fa-xmark text-xs w-3 h-3"></i>
-                            </button>
-                        </div>
-                    </div>
                 </div>
 
                 <button type="submit" class="w-full text-white bg-red-600 hover:bg-red-700 focus:ring-4 focus:ring-red-300 font-bold rounded-xl text-lg px-5 py-4 text-center touch-target shadow-md transition-transform active:scale-95">
@@ -679,24 +652,6 @@
                         <textarea name="machine_cause" rows="3" class="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-lg focus:ring-amber-500 focus:border-amber-500 p-3" placeholder="예: 퀼 센서 오작동 정지, 모터 온도 과열 등..." required></textarea>
                     </div>
 
-                    <!-- 사진 첨부 -->
-                    <div>
-                        <label class="block text-sm font-bold text-slate-700 mb-2">현장 사진 첨부 (선택)</label>
-                        <div class="flex items-center gap-3">
-                            <label class="cursor-pointer flex items-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-300 transition text-sm font-medium touch-target">
-                                <i class="fa-solid fa-camera text-slate-500"></i>
-                                <span>사진 선택</span>
-                                <input type="file" id="machine-file-input" accept="image/*" class="hidden" onchange="handleImageUpload(event, 'machine')">
-                            </label>
-                            <span id="machine-img-status" class="text-xs text-slate-500 truncate max-w-[180px]">선택된 파일 없음</span>
-                        </div>
-                        <div id="machine-img-container" class="mt-3 relative hidden w-full rounded-lg overflow-hidden border border-slate-200 bg-slate-50 max-h-48 flex justify-center items-center">
-                            <img id="machine-img-preview" src="" alt="Machine preview" class="max-h-48 object-contain">
-                            <button type="button" onclick="clearImage('machine')" class="absolute top-2 right-2 bg-red-600 hover:bg-red-700 text-white rounded-full p-1.5 shadow-md flex items-center justify-center transition">
-                                <i class="fa-solid fa-xmark text-xs w-3 h-3"></i>
-                            </button>
-                        </div>
-                    </div>
                 </div>
 
                 <button type="submit" class="w-full text-white bg-amber-500 hover:bg-amber-600 focus:ring-4 focus:ring-amber-300 font-bold rounded-xl text-lg px-5 py-4 text-center touch-target shadow-md transition-transform active:scale-95">
