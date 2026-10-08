@@ -422,12 +422,10 @@
                 } else {
                     throw new Error("Offline/Local fallback");
                 }
-                }
                 form.reset();
             } catch(e) {
                 console.warn("Firestore write skipped/failed, saving locally:", e);
                 
-                const newMachine = {
                 const newMachine = {
                     id: "local-" + Date.now(),
                     type: '설비고장', line, cause, action, qty,
