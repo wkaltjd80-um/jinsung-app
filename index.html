@@ -360,41 +360,50 @@
             if(!window.currentUser) return window.showToast("권한이 없습니다.", "error");
 
             const form = event.target;
-            const line = form.defect_line.value;
-            const cause = form.defect_cause.value;
-            const action = form.action_result.value;
-            const qty = 1;
+            const payload = {
+                productName: form.defect_product.value,
+                orderNo: form.defect_order_no.value,
+                qtOn: form.defect_qton.value,
+                date: form.defect_date.value,
+                line: form.defect_line.value,
+                type: form.defect_type.value,
+                action: form.action_result.value,
+                qty: parseInt(form.defect_qty.value) || 0,
+                cause: form.defect_cause.value,
+                image: null
+            };
             
             const imgPreview = document.getElementById('defect-img-preview');
-            const image = imgPreview && imgPreview.src && !imgPreview.classList.contains('hidden') && imgPreview.src.startsWith('data:') ? imgPreview.src : null;
+            payload.image = imgPreview && imgPreview.src && !imgPreview.classList.contains('hidden') && imgPreview.src.startsWith('data:') ? imgPreview.src : null;
             
             try {
                 if (window.submitDefectOnline && window.db) {
                     await Promise.race([
-                        window.submitDefectOnline(line, cause, action, qty, image),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+                        window.submitDefectOnline(payload),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 3000))
                     ]);
-                    window.showToast("[품질불량] 내역이 보고되었습니다.", "error-theme");
+                    window.showToast("[" + payload.type + "] 내역이 보고되었습니다.", "error-theme");
                 } else {
                     throw new Error("Offline/Local fallback");
                 }
                 form.reset();
+                form.defect_date.value = new Date().toISOString().split('T')[0]; // 리셋 후 오늘 날짜로 재설정
                 window.clearImage('defect');
             } catch(e) {
-                console.warn("Firestore write skipped/failed, saving locally:", e);
+                console.warn("API write skipped/failed, saving locally:", e);
                 
                 const newDefect = {
                     id: "local-" + Date.now(),
-                    type: '품질불량', line, cause, action, qty, image,
-                    date: new Date().toISOString().split('T')[0],
+                    ...payload,
                     timestamp: { toMillis: () => Date.now() }
                 };
                 window.defectData.unshift(newDefect);
                 window.updateDefectDashboard();
                 window.updateDefectTable();
                 
-                window.showToast("[품질불량] 로컬(메모리)에 저장되었습니다.", "error-theme");
+                window.showToast("[" + payload.type + "] 로컬(메모리)에 저장되었습니다.", "error-theme");
                 form.reset();
+                form.defect_date.value = new Date().toISOString().split('T')[0];
                 window.clearImage('defect');
             }
         };
@@ -469,14 +478,11 @@
             }
         };
 
-        // 폼 제출 로직 (API로 전송)
-        window.submitDefectOnline = async function(line, cause, action, qty, image) {
+        window.submitDefectOnline = async function(payload) {
             const response = await fetch('/api/defects', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    type: '품질불량', line, cause, action, qty: parseInt(qty) || 1, date: new Date().toISOString().split('T')[0]
-                })
+                body: JSON.stringify(payload)
             });
             if (!response.ok) throw new Error('Failed to save');
             await window.loadDefectsFromNotion(); // 저장 후 목록 갱신
@@ -553,6 +559,40 @@
             <!-- 불량 신고 폼 -->
             <form id="form-defect" class="fade-in space-y-4" onsubmit="submitDefect(event)">
                 <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-5">
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-sm font-bold text-slate-700 mb-2">제품명</label>
+                            <input type="text" name="defect_product" class="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-lg p-3" placeholder="예: 샤프트" required>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-bold text-slate-700 mb-2">지시번호</label>
+                            <input type="text" name="defect_order_no" class="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-lg p-3" placeholder="예: 120501" required>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-sm font-bold text-slate-700 mb-2">QT ON</label>
+                            <input type="text" name="defect_qton" class="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-lg p-3" placeholder="예: 06242">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-bold text-slate-700 mb-2">수량</label>
+                            <input type="number" name="defect_qty" min="0" value="1" class="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-lg p-3" required>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-sm font-bold text-slate-700 mb-2">발생 날짜</label>
+                            <input type="date" id="defect_date_input" name="defect_date" class="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-lg p-3" required>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-bold text-slate-700 mb-2">유형</label>
+                            <select name="defect_type" class="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-lg p-3" required>
+                                <option value="품질불량" selected>품질불량</option>
+                                <option value="설비고장">설비고장</option>
+                                <option value="기타">기타</option>
+                            </select>
+                        </div>
+                    </div>
                      <div>
                         <label class="block text-sm font-bold text-slate-700 mb-2">발생 라인</label>
                         <select name="defect_line" class="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-lg focus:ring-red-500 focus:border-red-500 p-3 touch-target" required>
@@ -565,27 +605,32 @@
                         </select>
                     </div>
                     <div>
-                        <label class="block text-sm font-bold text-slate-700 mb-2">발생 원인 / 내용 (상세히)</label>
-                        <textarea name="defect_cause" rows="3" class="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-lg focus:ring-red-500 focus:border-red-500 p-3" placeholder="예: 치수 불량, 외관 찍힘 등..." required></textarea>
+                        <label class="block text-sm font-bold text-slate-700 mb-2">내용 (상세히)</label>
+                        <textarea name="defect_cause" rows="2" class="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-lg focus:ring-red-500 focus:border-red-500 p-3" placeholder="예: 치수 불량, 외관 찍힘 등..." required></textarea>
                     </div>
                     
                     <div id="action_section">
                         <label class="block text-sm font-bold text-slate-700 mb-2">조치 결과</label>
                         <div class="grid grid-cols-2 gap-3">
                             <label class="cursor-pointer">
-                                <input type="radio" name="action_result" value="폐기" class="peer sr-only">
+                                <input type="radio" name="action_result" value="폐기" class="peer sr-only" checked>
                                 <div class="text-center px-2 py-2.5 border-2 border-slate-200 rounded-lg peer-checked:border-red-500 peer-checked:text-red-600 peer-checked:bg-red-50 font-bold transition text-sm">
-                                    완전 폐기 (Scrap)
+                                    폐기
                                 </div>
                             </label>
                             <label class="cursor-pointer">
-                                <input type="radio" name="action_result" value="수정" class="peer sr-only" checked>
+                                <input type="radio" name="action_result" value="수정" class="peer sr-only">
                                 <div class="text-center px-2 py-2.5 border-2 border-slate-200 rounded-lg peer-checked:border-emerald-500 peer-checked:text-emerald-600 peer-checked:bg-emerald-50 font-bold transition text-sm">
-                                    수정 가능 (Rework)
+                                    수정
                                 </div>
                             </label>
                         </div>
                     </div>
+                    
+                    <script>
+                        // 오늘 날짜 기본값 설정
+                        document.getElementById('defect_date_input').value = new Date().toISOString().split('T')[0];
+                    </script>
 
                     <!-- 사진 첨부 -->
                     <div>

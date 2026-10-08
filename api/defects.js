@@ -33,16 +33,19 @@ module.exports = async (req, res) => {
 
   if (req.method === 'POST') {
     try {
-      const { type, line, cause, action, qty, date } = req.body;
+      const { type, line, cause, action, qty, date, productName, orderNo, qtOn } = req.body;
       const response = await notion.pages.create({
         parent: { database_id: databaseId },
         properties: {
-          '발생 원인': { title: [{ text: { content: cause || '원인 미상' } }] },
+          '제품명': { title: [{ text: { content: productName || '이름 없음' } }] },
+          '지시번호': { rich_text: [{ text: { content: orderNo || '-' } }] },
+          'QT ON': { rich_text: [{ text: { content: qtOn || '-' } }] },
+          '내용': { rich_text: [{ text: { content: cause || '내용 없음' } }] },
           '유형': { select: { name: type || '품질불량' } },
           '발생 라인': { select: { name: line || '-' } },
-          '조치 결과': { select: { name: action || '-' } },
+          '조치결과': { select: { name: action || '-' } },
           '수량': { number: qty || 0 },
-          '날짜': { date: { start: date || new Date().toISOString().split('T')[0] } },
+          '발생날짜': { date: { start: date || new Date().toISOString().split('T')[0] } },
         },
       });
       return res.status(200).json({ success: true, data: response });
