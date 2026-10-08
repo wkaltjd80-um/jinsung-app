@@ -449,153 +449,53 @@
         window.updateDefectTable();
     </script>
 
-    <!-- Firebase SDK 및 데이터 동기화 모듈 -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+    <!-- Notion API 동기화 모듈 -->
+    <script>
+        window.currentUser = { uid: "operator" }; // 인증 대체
+        window.db = true; // DB 연결 상태 에뮬레이션
 
-        // Firebase Configuration
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-            projectId: "demo-project"
-        };
-        
-        try {
-            const app = initializeApp(firebaseConfig);
-            window.db = getFirestore(app);
-            window.auth = getAuth(app);
-            window.appId = typeof __app_id !== 'undefined' ? __app_id : 'jinsung-factory-app';
-        } catch (e) {
-            console.error("Firebase initialization failed in module:", e);
-        }
-
-        // Initialize Auth
-        async function initAuth() {
-            if (!window.auth) return;
+        // 불량 데이터 로드
+        window.loadDefectsFromNotion = async function() {
             try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(window.auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(window.auth);
-                }
-            } catch (error) {
-                console.error("Auth error:", error);
-                window.showToast("인증 실패. 시스템을 재시작해주세요.", "error");
-            }
-        }
-
-        if (window.auth) {
-            onAuthStateChanged(window.auth, (user) => {
-                if (user) {
-                    window.currentUser = user;
-                    setupDataListeners();
-                    injectDummyDataIfEmptyOnline();
-                } else {
-                    if (firebaseConfig.projectId === "demo-project") {
-                        window.currentUser = { uid: "dummy-operator", displayName: "데모 작업자" };
-                    } else {
-                        window.currentUser = null;
-                    }
-                }
-            });
-        }
-
-        function setupDataListeners() {
-            if (!window.currentUser || !window.db) return;
-            
-            const prodRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'production');
-            const defRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'defects');
-
-            // 생산 데이터 리스너
-            onSnapshot(prodRef, (snapshot) => {
-                window.productionData = [];
-                snapshot.forEach(doc => {
-                    window.productionData.push({ id: doc.id, ...doc.data() });
-                });
-                window.productionData.sort((a, b) => b.timestamp?.toMillis() - a.timestamp?.toMillis() || 0);
-                window.updateProductionTable();
-            }, (error) => {
-                console.error("생산 데이터 로드 에러:", error);
-            });
-
-            // 불량 데이터 리스너
-            onSnapshot(defRef, (snapshot) => {
-                window.defectData = [];
-                snapshot.forEach(doc => {
-                    window.defectData.push({ id: doc.id, ...doc.data() });
-                });
-                window.defectData.sort((a, b) => b.timestamp?.toMillis() - a.timestamp?.toMillis() || 0);
+                const response = await fetch('/api/defects');
+                if (!response.ok) throw new Error('Failed to load');
+                const data = await response.json();
+                window.defectData = data;
                 window.updateDefectDashboard();
                 window.updateDefectTable();
-            }, (error) => {
-                console.error("불량 데이터 로드 에러:", error);
-            });
-        }
-
-        async function injectDummyDataIfEmptyOnline() {
-            if (!window.db) return;
-            const defRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'defects');
-            onSnapshot(query(defRef), async (snapshot) => {
-                if(snapshot.empty && window.currentUser) {
-                    console.log("더미 데이터 주입 시작...");
-                    const dummyDefects = [
-                       { type: '품질불량', line: '수동 라인', cause: '원소재 흑피 불량', action: '수정', qty: 2, date: '2026-06-10' },
-                       { type: '품질불량', line: '자동화 라인', cause: '소재 세팅 불량으로 인한 치수 미달', action: '폐기', qty: 1, date: '2026-06-20' },
-                       { type: '설비고장', line: '자동화 라인', cause: '심압대 T/S QUILL 센서 오작동 정지', action: '-', qty: 0, date: '2026-06-24' }
-                    ];
-                    for(const d of dummyDefects) {
-                        await addDoc(defRef, {...d, timestamp: serverTimestamp()});
-                    }
-                }
-            });
-        }
-
-        // --- 폼 제출 로직 (Firestore 저장) ---
-        window.submitProduction = async function(event) {
-            event.preventDefault();
-            if(!window.currentUser) return window.showToast("권한이 없습니다.", "error");
-            if(!window.db) return window.showToast("데이터베이스 오류", "error");
-
-            const form = event.target;
-            const line = form.prod_line.value;
-            const part = form.prod_part.value;
-            const qty = parseInt(form.prod_qty.value);
-            const worker = form.prod_worker.value;
-
-            try {
-                const prodRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'production');
-                await addDoc(prodRef, {
-                    line, part, qty, worker,
-                    date: new Date().toISOString().split('T')[0],
-                    timestamp: serverTimestamp()
-                });
-                window.showToast("생산 실적이 전송되었습니다.", "success");
-                form.reset();
-            } catch(e) {
-                window.showToast("전송 실패", "error");
-                console.error(e);
+            } catch (error) {
+                console.error("데이터 로드 에러:", error);
+                window.showToast("데이터를 불러오지 못했습니다.", "error");
             }
         };
+
+        // 폼 제출 로직 (API로 전송)
         window.submitDefectOnline = async function(line, cause, action, qty, image) {
-            const defRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'defects');
-            await addDoc(defRef, {
-                type: '품질불량', line, cause, action, qty, image,
-                date: new Date().toISOString().split('T')[0],
-                timestamp: serverTimestamp()
+            const response = await fetch('/api/defects', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    type: '품질불량', line, cause, action, qty: parseInt(qty) || 1, date: new Date().toISOString().split('T')[0]
+                })
             });
+            if (!response.ok) throw new Error('Failed to save');
+            await window.loadDefectsFromNotion(); // 저장 후 목록 갱신
         };
 
         window.submitMachineOnline = async function(line, cause, action, qty, image) {
-            const defRef = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'defects');
-            await addDoc(defRef, {
-                type: '설비고장', line, cause, action, qty, image,
-                date: new Date().toISOString().split('T')[0],
-                timestamp: serverTimestamp()
+            const response = await fetch('/api/defects', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    type: '설비고장', line, cause, action, qty: 0, date: new Date().toISOString().split('T')[0]
+                })
             });
+            if (!response.ok) throw new Error('Failed to save');
+            await window.loadDefectsFromNotion(); // 저장 후 목록 갱신
         };
 
-        // Run init
-        initAuth();
+        // 초기 데이터 로드 실행
+        window.loadDefectsFromNotion();
     </script>
 
     <style>
